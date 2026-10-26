@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and publish release
+    runs-on: windows-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $version = ($metadata.packages | Where-Object { $_.name -eq 'win-file-lock-detector' }).version
+          if ($env:TAG -ne "v$version") {
+            throw "Tag '$env:TAG' does not match Cargo.toml version 'v$version'. Update the version or retag."
+          }
+
+          $name = "win-file-lock-detector-$env:TAG-windows-x86_64"
+          $stage = Join-Path 'dist' $name
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item 'target\release\win-file-lock-detector.exe' $stage
+          Copy-Item 'README.md' $stage
+
+          $zip = Join-Path 'dist' "$name.zip"
+          Compress-Archive -Path $stage -DestinationPath $zip
+
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name.zip" | Set-Content -Path 'dist\SHA256SUMS.txt' -Encoding ascii
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: win-file-lock-detector ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
